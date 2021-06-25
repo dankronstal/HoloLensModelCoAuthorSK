@@ -1,0 +1,190 @@
+﻿<!DOCTYPE html>
+<!-- references
+- https://jsfiddle.net/xa9uscme/1/
+- https://threejs.org/docs/?q=orbit#examples/en/controls/OrbitControls
+- https://threejs.org/docs/#api/en/core/Raycaster
+-->
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>HoloLensModelCoAuthorSK-WebEditor</title>
+	<style type="text/css">
+		body{
+			overflow: hidden;
+			margin:0;
+		}
+	</style>
+  </head>
+  <body>    
+  </body>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+<script type="module">
+import * as THREE from './three.module.js';
+import { OrbitControls } from './OrbitControls.js';
+
+function main() {
+	const autoupdateinterval = 5; //in seconds
+  	const loader = new THREE.FileLoader();
+	const renderer = new THREE.WebGLRenderer();
+	renderer.setSize( window.innerWidth, window.innerHeight );
+	document.body.appendChild( renderer.domElement );
+	
+	const scene = new THREE.Scene();
+	const camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 10000 );
+	const controls = new OrbitControls( camera, renderer.domElement );
+
+	camera.position.set( 5, 2, 5 );
+	controls.update();
+
+	scene.add(new THREE.GridHelper(10, 10));
+
+	const light = new THREE.DirectionalLight(0xFFFFFF, 1);
+	light.position.set(-1, 2, 4);
+	scene.add(light);
+
+	const ambientLight = new THREE.AmbientLight( 0x222222 );
+	scene.add( ambientLight );
+
+	var raycaster = new THREE.Raycaster();
+	var mouse = new THREE.Vector2();
+	var plane = new THREE.Plane();
+	var pNormal = new THREE.Vector3(0, 1, 0); // plane's normal
+	var planeIntersect = new THREE.Vector3(); // point of intersection with the plane
+	var pIntersect = new THREE.Vector3(); // point of intersection with an object (plane's point)
+	var shift = new THREE.Vector3(); // distance between position of an object and points of intersection with the object
+	var isDragging = false;
+	var dragObject;
+
+	const geometry = new THREE.SphereGeometry(.1);
+
+	function makeInstance(pos, material) {
+		if(pos.length>0){
+			const sphere = new THREE.Mesh(geometry, material);
+			scene.add(sphere);
+			sphere.position.x = pos[0];
+			sphere.position.y = pos[1];
+			sphere.position.z = pos[2];
+			return sphere;
+		}
+	}
+
+	function writeChange(){
+		var csvOut = "";
+		for ( let i = 0; i < points.length; i ++ ) {
+			csvOut += points[i].position.x+","+points[i].position.y+","+points[i].position.z+ (i == points.length-1 ? "" : "\r\n");
+		}
+		console.log(csvOut);
+		var uri = "https://danslab.blob.core.windows.net/$web/HoloLensModelCoAuthorSKweb/model2.csv?sp=racwd&st=2021-06-24T21:05:29Z&se=2022-06-25T05:05:29Z&spr=https&sv=2020-02-10&sr=b&sig=rVUT7VaQoe%2FKDte3hHgGEBrOKpKgnBBfgqtZ69%2FnTIw%3D";
+		var requestData = csvOut;
+		$.ajax({
+			url: uri,
+			type: "PUT",
+			data: requestData,
+			processData: false,
+			beforeSend: function(xhr) {
+				xhr.setRequestHeader("x-ms-blob-type", "BlockBlob");
+			},
+			success: function() {
+				//console.log("great success!");
+			},
+			error: function (xhr, desc, err) {
+				console.log(err);
+				console.log(desc);
+			}
+		});
+	}
+
+	function disposeObject(oId){
+		const object = scene.getObjectByProperty('uuid', oId);
+		object.geometry.dispose();
+		object.material.dispose();
+		scene.remove(object);
+	}
+
+	var points = [];
+	var pointIdCache = [];
+
+	function loadModel(){
+		if(isDragging)
+			return; //don't interrupt a brother mid-flow
+		loader.load(
+			uri,
+			function (data) {
+				//cleanup
+				for(var i=0; i<pointIdCache.length; i++)
+					disposeObject(pointIdCache[i]);
+				renderer.renderLists.dispose();
+				points = [];
+				pointIdCache = [];
+				console.log("loading Model");
+				var sourcePoints = data.split("\r\n");
+				for(var i=0; i<sourcePoints.length; i++){
+					var p = sourcePoints[i].split(',');
+					var point = makeInstance(p,new THREE.MeshPhongMaterial( {color: 0xff00ff} ));
+					points[points.length] = point;
+					pointIdCache[pointIdCache.length] = point.uuid;
+				}
+			},
+			function (xhr) {
+				//console.log( (xhr.loaded / xhr.total * 100) + '% loaded' );
+			},
+			function (err) {
+				console.error('An error happened');
+			}
+		);
+	}	
+
+	renderer.setAnimationLoop(() => {
+		for ( let i = 0; i < points.length; i ++ ) {
+			points[ i ].material.color.set( 0x00ff00 );
+		}
+		raycaster.setFromCamera(mouse, camera);	
+		const intersects = raycaster.intersectObjects( points );
+		for ( let i = 0; i < intersects.length; i ++ ) {
+			intersects[ i ].object.material.color.set( 0xff0000 );
+		}
+		renderer.render(scene, camera);
+	});
+
+	// events
+	document.addEventListener("pointermove", event => {
+		mouse.x = ( event.clientX / window.innerWidth ) * 2 - 1;
+		mouse.y = - ( event.clientY / window.innerHeight ) * 2 + 1;
+		raycaster.setFromCamera(mouse, camera);	
+		if (isDragging) {
+			raycaster.ray.intersectPlane(plane, planeIntersect);
+			dragObject.position.addVectors(planeIntersect, shift);
+		}
+	});
+
+	document.addEventListener("pointerdown", () => {
+		console.log("pointerdown");
+		var intersects = raycaster.intersectObjects(points);
+		if (intersects.length > 0) {
+			controls.enabled = false;
+			pIntersect.copy(intersects[0].point);
+			plane.setFromNormalAndCoplanarPoint(pNormal, pIntersect);
+			shift.subVectors(intersects[0].object.position, intersects[0].point);
+			isDragging = true;
+			dragObject = intersects[0].object;
+		}
+	});
+
+	document.addEventListener("pointerup", () => {
+		console.log("pointerup");
+		if(isDragging){
+			writeChange();
+		}
+		isDragging = false;
+		dragObject = null;
+		controls.enabled = true;
+	});
+
+    var intervalID = setInterval(loadModel, autoupdateinterval*1000);
+}
+
+main();
+</script>
+</html>
+
